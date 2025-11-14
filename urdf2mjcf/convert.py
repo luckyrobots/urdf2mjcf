@@ -48,6 +48,8 @@ class ParsedJointParams:
 class GeomElement:
     type: str
     size: str | None = None
+    # Optional scaling factor from URDF. This is applied on the mesh asset
+    # in MJCF (not on the geom itself) to comply with the MuJoCo schema.
     scale: str | None = None
     mesh: str | None = None
 
@@ -613,11 +615,20 @@ def convert_urdf_to_mjcf(
     child_links = set(child_joints.keys())
     root_links: list[str] = list(all_links - child_links)
     if not root_links:
-        raise ValueError("No root link found in URDF.")
-    root_link_name: str = root_links[0]
+        # Some URDFs (e.g., static environments) only define links as children of
+        # joints with a "world" parent and therefore have no formal root link.
+        # In that case, fall back to the first defined link instead of failing.
+        logger.warning("No root link found in URDF; falling back to first defined link.")
+        if not all_links:
+            raise ValueError("URDF has no links.")
+        root_link_name = next(iter(all_links))
+    else:
+        root_link_name = root_links[0]
 
     # These dictionaries are used to collect mesh assets and actuator joints.
-    mesh_assets: dict[str, str] = {}
+    # mesh_assets maps a unique mesh asset name to its attributes, including
+    # the original filename and optional scale.
+    mesh_assets: dict[str, dict[str, str]] = {}
     actuator_joints: list[ParsedJointParams] = []
 
     def handle_geom_element(geom_elem: ET.Element | None, default_size: str) -> GeomElement:
@@ -662,10 +673,23 @@ def convert_urdf_to_mjcf(
         if mesh_elem is not None:
             filename = mesh_elem.attrib.get("filename")
             if filename is not None:
-                mesh_name = Path(filename).name
-                if mesh_name not in mesh_assets:
-                    mesh_assets[mesh_name] = filename
+                base_name = Path(filename).name
+                # If a scale is provided, we create a unique mesh asset name
+                # that encodes the scale so that different instances with the
+                # same OBJ but different scales get separate assets if needed.
                 scale = mesh_elem.attrib.get("scale")
+                if scale is not None:
+                    safe_scale = scale.replace(" ", "_")
+                    mesh_name = f"{base_name}_scaled_{safe_scale}"
+                else:
+                    mesh_name = base_name
+
+                if mesh_name not in mesh_assets:
+                    asset_spec: dict[str, str] = {"file": filename}
+                    if scale is not None:
+                        asset_spec["scale"] = scale
+                    mesh_assets[mesh_name] = asset_spec
+
                 return GeomElement(
                     type="mesh",
                     size=None,
@@ -816,8 +840,6 @@ def convert_urdf_to_mjcf(
                         collision_geom_attrib["mesh"] = geom.mesh
                 elif geom.size is not None:
                     collision_geom_attrib["size"] = geom.size
-                if geom.scale is not None:
-                    collision_geom_attrib["scale"] = geom.scale
             collision_geom_attrib["class"] = "collision"
             ET.SubElement(body, "geom", attrib=collision_geom_attrib)
 
@@ -857,8 +879,6 @@ def convert_urdf_to_mjcf(
                         visual_geom_attrib["mesh"] = geom.mesh
                 elif geom.size is not None:
                     visual_geom_attrib["size"] = geom.size
-                if geom.scale is not None:
-                    visual_geom_attrib["scale"] = geom.scale
             visual_geom_attrib["class"] = "visual"
             ET.SubElement(body, "geom", attrib=visual_geom_attrib)
 
@@ -915,8 +935,11 @@ def convert_urdf_to_mjcf(
     asset_elem: ET.Element | None = mjcf_root.find("asset")
     if asset_elem is None:
         asset_elem = ET.SubElement(mjcf_root, "asset")
-    for mesh_name, filename in mesh_assets.items():
-        ET.SubElement(asset_elem, "mesh", attrib={"name": mesh_name, "file": filename})
+    for mesh_name, asset_spec in mesh_assets.items():
+        mesh_attrib: dict[str, str] = {"name": mesh_name, "file": asset_spec["file"]}
+        if "scale" in asset_spec and asset_spec["scale"] is not None:
+            mesh_attrib["scale"] = asset_spec["scale"]
+        ET.SubElement(asset_elem, "mesh", attrib=mesh_attrib)
 
     add_contact(mjcf_root, robot)
 
@@ -928,7 +951,8 @@ def convert_urdf_to_mjcf(
         urdf_dir: Path = urdf_path.parent.resolve()
         target_mesh_dir: Path = (mjcf_path.parent / "meshes").resolve()
         target_mesh_dir.mkdir(parents=True, exist_ok=True)
-        for mesh_name, filename in mesh_assets.items():
+        for mesh_name, asset_spec in mesh_assets.items():
+            filename = asset_spec["file"]
             source_path: Path = (urdf_dir / filename).resolve()
             target_path: Path = target_mesh_dir / Path(filename).name
             if source_path != target_path:
