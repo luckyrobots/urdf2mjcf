@@ -765,6 +765,12 @@ def convert_urdf_to_mjcf(
                 inertial_elem.attrib["pos"] = origin_inertial.attrib.get("xyz", "0 0 0")
                 rpy = origin_inertial.attrib.get("rpy", "0 0 0")
                 inertial_elem.attrib["quat"] = rpy_to_quat(rpy)
+            else:
+                # Some URDFs omit the inertial origin; default to identity pose so that
+                # MuJoCo-required attributes are always present.
+                inertial_elem.attrib["pos"] = "0 0 0"
+                inertial_elem.attrib["quat"] = "1 0 0 0"
+
             mass_elem = inertial.find("mass")
             if mass_elem is not None:
                 inertial_elem.attrib["mass"] = mass_elem.attrib.get("value", "0")
