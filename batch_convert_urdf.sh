@@ -23,7 +23,7 @@ fi
 
 # Default inline metadata if no file is provided. This disables the floating base
 # and freejoint so objects behave like static props by default.
-DEFAULT_METADATA_JSON='{"floating_base": false, "freejoint": false}'
+DEFAULT_METADATA_JSON='{"floating_base": true, "freejoint": true}'
 
 if [[ -n "${METADATA_PATH}" ]]; then
   if [[ ! -f "${METADATA_PATH}" ]]; then
